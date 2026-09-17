@@ -1,0 +1,221 @@
+---
+title: "Journée data science"
+author: "kardiatou BA"
+date: "2026-09-17"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+summary(cars)
+```
+
+Jeu de données
+```{r dplyr,message=F}
+
+#install.packages("dplyr")
+library(dplyr)
+```
+
+```{r}
+data <- read.table("C:\\Users\\kardi\\Downloads\\Journée_data_science\\farms_train.csv",
+                    sep = ",", dec = ".", header = TRUE,
+                    fileEncoding = "UTF-8-BOM")
+names(data)  # vérifier que ça donne bien "DIFF"
+head(data)
+
+```
+```{r}
+str(data) #Quelles sont les différentes variables ?
+```
+
+```{r}
+anyNA(data)          # TRUE/FALSE : y a-t-il au moins un NA dans tout le dataset ?
+sum(is.na(data))     # nombre total de NA, toutes colonnes confondues
+```
+On indique les variables explicatives
+```{r}
+data <- mutate(data, DIFF = as.factor(DIFF))
+data <- mutate(data, TOF = as.factor(TOF))
+glimpse(data)
+
+```
+
+```{r}
+table(data$DIFF)
+prop.table(table(data$DIFF)) * 100
+
+library(ggplot2)
+ggplot(data, aes(x = DIFF, fill = DIFF)) +
+  geom_bar() +
+  labs(title = "Répartition des exploitations saines vs défaillantes")
+```
+
+```{r}
+data_num <- data %>%
+  select(DIFF, AGE, R7, R8, R17, R22, R32) %>%
+  mutate(DIFF = as.numeric(as.character(DIFF)))  # repasse 0/1 en numérique
+
+corr_mat <- cor(data_num, use = "complete.obs")
+corrplot(corr_mat, method = "color", addCoef.col = "black", type = "upper")
+```
+
+
+Le lien entre `R32` et `DIFF` est fort (0.62) : c'est la variable la plus discriminante.
+Le lien entre `R17` et `DIFF` est modéré (-0.38) : une charge financière/dette élevée est associée à la défaillance.
+Le lien entre `R7` et `DIFF` est modéré (-0.33) : un endettement long terme élevé est associé à la défaillance.
+Le lien entre `R22` et `DIFF` est quasi inexistant (0.03) malgré des outliers marqués côté défaillantes.
+Le lien entre `AGE` et `DIFF` est quasi inexistant (0.03).
+Le lien entre `R8` et `DIFF` est quasi inexistant (0.01)
+
+
+```{r}
+library(tidyr)
+library(ggplot2)
+
+data %>%
+  select(DIFF, AGE, R7, R8, R17, R22, R32) %>%
+  pivot_longer(-DIFF, names_to = "variable", values_to = "valeur") %>%
+  ggplot(aes(x = DIFF, y = valeur, fill = DIFF)) +
+  geom_boxplot() +
+  facet_wrap(~variable, scales = "free") +
+  labs(title = "Distribution des variables quantitatives selon DIFF",
+       x = "DIFF (0 = défaillante, 1 = saine)",
+       y = "Valeur") +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+- Le lien entre `AGE` et `DIFF` est quasi inexistant : les distributions des deux groupes se superposent presque totalement.
+- Le lien entre `R17` et `DIFF` est modéré : les exploitations défaillantes présentent une médiane de charges financières relativement plus élevée.
+- Le lien entre `R22` et `DIFF` est faible sur la tendance centrale, mais les valeurs extrêmes sont concentrées côté défaillantes.
+- Le lien entre `R32` et `DIFF` est fort : c'est la variable la plus discriminante des six.
+- Le lien entre `R7` et `DIFF` est modéré à fort : un endettement long terme plus élevé est associé à la défaillance.
+- Le lien entre `R8` et `DIFF` est faible : les distributions se chevauchent largement.
+
+
+```{r}
+table_tof_diff <- table(data$TOF, data$DIFF)
+table_tof_diff
+fisher.test(table_tof_diff)
+```
+On rejette l'hypothèse nulle d'indépendance entre TOF et DIFF. Il existe donc une association statistiquement significative entre le type d'exploitation (TOF) et le statut de défaillance (DIFF), et ce résultat est fiable puisqu'il ne repose pas sur une approximation asymptotique — contrairement au chi² qui avait émis un avertissement, Fisher est valide même avec les petits effectifs (notamment TOF6).
+
+
+
+On va commencer les différent modèles: La régression logistique
+
+En premier on met toutes les variables explicatives pour évaluer le modèles
+```{r}
+model_logit <- glm(DIFF ~ ., data = data, family = "binomial")
+summary(model_logit)
+
+```
+Pour le choix des paramètres :Ici, DIFF est une variable binaire (0/1, sain/défaillant) : elle suit une loi de Bernoulli (cas particulier de la loi binomiale avec n=1 essai). C'est pour ça qu'on choisit family = "binomial" — c'est le choix standard et quasi automatique dès que la variable à prédire n'a que deux modalités.
+
+
+En prenant en compte des effets d'interactions entre les variables explicatives.
+
+```{r}
+# Modèle avec quelques interactions ciblées, basées sur l'exploration
+model_interaction <- glm(DIFF ~ TOF + AGE + R7 + R8 + R17 + R22 + R32 +
+                            R7:R32 + R17:R32,
+                          data = data, family = "binomial")
+
+summary(model_interaction)
+AIC(model_logit, model_interaction)  # comparer au modèle sans interaction
+anova(model_logit, model_interaction, test = "Chisq")  # modèles emboîtés
+```
+```{r}
+library(MASS)
+model_vide <- glm(DIFF ~ 1, data = data, family = "binomial")   # modèle avec 0 variable
+model_complet <- glm(DIFF ~ ., data = data, family = "binomial") # modèle avec toutes
+
+model_step <- stepAIC(model_vide,
+                       scope = list(lower = model_vide, upper = model_complet),
+                       direction = "forward", trace = TRUE)
+```
+Le meilleur choix est de prendre DIFF ~ R32 + R17 + R7
+
+```{r}
+model_final <- glm(DIFF ~ R32 + R17 + R7,
+                   data = data,
+                   family = "binomial")
+
+summary(model_final)
+AIC(model_final)
+```
+```{r}
+AIC(model_complet, model_final)
+```
+
+```{r}
+# install.packages("pROC")
+library(pROC)
+
+# Probabilités prédites par le modèle
+prob <- predict(model_final, type = "response")
+
+# Courbe ROC
+roc_model <- roc(data$DIFF,
+                 prob,
+                 levels = c("0", "1"),
+                 direction = "<")
+
+# AUC
+auc(roc_model)
+```
+```{r}
+plot(roc_model,
+     main = "Courbe ROC - Régression logistique",
+     col = "blue",
+     lwd = 2,
+     print.auc = TRUE,
+     legacy.axes = TRUE)
+
+abline(a = 0, b = 1, lty = 2)
+```
+
+```{r}
+test <- read.table("C:\\Users\\kardi\\Downloads\\Journée_data_science\\farms_test.csv",
+                   sep = ",", dec = ".", header = TRUE,
+                   fileEncoding = "UTF-8-BOM")
+
+head(test)
+str(test)
+```
+```{r}
+prob_test <- predict(model_final,
+                     newdata = test,
+                     type = "response")
+```
+
+
+```{r}
+prob_test
+```
+
+```{r}
+pred_test <- ifelse(prob_test >= 0.5, 1, 0)
+pred_test
+```
+
+```{r}
+table(pred_test)
+```
+```{r}
+soumission <- data.frame(DIFF = pred_test)
+
+write.csv(soumission,
+          "soumission.csv",
+          row.names = FALSE)
+```
+
